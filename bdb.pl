@@ -1,28 +1,32 @@
 #!/usr/local/bin/perl
-
-use feature say;
+use feature 'say';
 use DB_File;
 use BerkeleyDB;
 
-$file=$ARGV[0];
-$act=$ARGV[1];
-$key=$ARGV[2];
-$val=$ARGV[3];
+my $file=$ARGV[0];
+my $act=$ARGV[1];
+my $key_in = $ARGV[2];
+my $val = $ARGV[3];
+
+my (%h, $flagx, $flag1, $db, $type); # initialize strict variables
+my $ver1 = '1';
+my $verx = 'current';
+
 usage() unless $file;
 
 if ($act eq 'create') {
-	die 'no version to create' unless $key;
+	die 'no version to create' unless $key_in;
 	die 'no type to create' unless $val;
-	if ($key == 1) {
+	if ($key_in == 1) {
 		tie %h, "DB_File", $file, O_RDWR|O_CREAT, 0644, ${'DB_'.uc($val)}  or die "$!\n";
-	} elsif ($key eq 'current') {
+	} elsif ($key_in eq 'current') {
 		tie %h, 'BerkeleyDB::'.ucfirst($val), -Filename => $file, -Flags => DB_CREATE;
 	}
 	untie %h;
 	exit;
 }
 
-die 'no file' unless -f $file;
+die "$file doesn't exist" unless -f $file;
 
 if ($act eq 'clear') {
 	$flagx = DB_TRUNCATE ;
@@ -35,50 +39,66 @@ if ($act eq 'clear') {
 	$flagx = '';
 }
 
-if ($db = tie %h, BerkeleyDB::Hash, -Filename => $file, -Flags => $flagx) { $ver = 'current'; $type='hash'; }
-elsif ($db = tie %h, BerkeleyDB::Btree, -Filename => $file, -Flags => $flagx) { $ver = 'current'; $type = 'btree'; }
-elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_HASH) { $ver = '1'; $type = "hash"; }
-elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_BTREE) { $ver = '1'; $type = "btree"; }
+if ($db = tie %h, "BerkeleyDB::Hash", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type='hash'; }
+elsif ($db = tie %h, "BerkeleyDB::Btree", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type = 'btree'; }
+elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_HASH) { $vers = $ver1; $type = "hash"; }
+elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_BTREE) { $vers = $ver1; $type = "btree"; }
 else { die "unknown type"; }
 
-# use \0 in key val when share with other c app like postfix
-if ($ver eq 'current') { $key .= "\0"; $val .= "\0"; }
 unless ($act) { # view all
-	while ((my $key, my $val) = each %h) { say "$key $val"; }
+	while ((my $k, my $v) = each %h) { say "$k $v"; }
 	exit;
 }
-usage() unless $act;
+
+exit if $act eq 'clear';
 
 if ($act eq 'type') {
-	$ver= $BerkeleyDB::db_version if $ver eq 'current';
-	say "version $ver $type";
+	$vers = $BerkeleyDB::db_version if $vers eq 'current';
+	say "version $vers $type";
 	exit;
 }
 
-usage() unless $key;
+usage() unless $key_in;
+
+my $caret;
+$caret = '^' if $act eq 'prefix' || $act eq 'delprefix';
+if ($act eq 'prefix' || $act eq 'grep') {	# match keys from beginning or part
+	for my $k (keys %h) { say $k if $k =~ /^$caret$key_in/; }
+} elsif ($act eq 'delprefix' || $act eq 'delpart') { # delete keys by matching from beginning or part
+	for my $k (keys %h) {
+		if ($k =~ /^$caret$key_in/) {
+			delete $h{$k};
+			say "Can't delete $k" if $h{$k};
+		}
+	}
+}
+
+# use \0 in key val when share with other c app like postfix, but don't add it with grep or prefix above
+if ($vers eq $verx) { $key_in .= "\0"; $val .= "\0"; }
+
 if ($act eq 'get') {
-	 say $h{$key} if $h{$key};
+	 say $h{$key_in} if $h{$key_in};
 } elsif ($act eq 'add') {
-	if ($h{$key}) { die "$file key '$key' exists"; } else { $h{$key}=$val;}
+	if ($h{$key_in}) { die "$file key '$key_in' exists"; } else { $h{$key_in}=$val;}
 } elsif ($act eq 'del') {
-	delete $h{$key};
-	say "Can't delete $key" if $h{$key};
+	delete $h{$key_in};
+	say "Can't delete $key_in" if $h{$key_in};
 } elsif ($act eq 'count') {
-	if ($h{$key}) {
-		$h{$key}+= $val;
-		$h{$key}.="\0" if $ver eq 'current';
+	if ($h{$key_in}) {
+		$h{$key_in}+= $val;
+		$h{$key_in}.="\0" if $vers eq $verx;
 	} else {
-		$h{$key}=$val;
+		$h{$key_in}=$val;
 	}
 } elsif ($act eq 'change') {
-	die "file key '$key' doesn't exist" unless $h{$key};
-	$h{$key}=$val;
+	die "file key '$key_in' doesn't exist" unless $h{$key_in};
+	$h{$key_in}=$val;
 } elsif ($act eq 'delist') {
 	use File::Slurp;
-	@lines = read_file "$key";
+	my @lines = read_file "$key_in";
 	for my $rec (@lines) {
 		chomp $rec;
-		$rec .= "\0" if $ver eq 'current';
+		$rec .= "\0" if $vers eq $verx;
 		delete $h{$rec};
 		say "Can't delete $rec" if $h{$rec};
 	}
@@ -90,12 +110,16 @@ sub usage {
 	say "usage:
 	\$file (view all)
 	\$file get \$key (read a key)
+	\$file prefix \$key (search keys by prefix)
+	\$file grep \$key (search keys by part)
 	\$file add \$key \$val
-	\$file count \$key \$val (add or increase \$val)
+	\$file count \$key \$val (add or increase \$val. Empty \$val reset to 0)
 	\$file change \$key \$newval
 	\$file del \$key
+	\$file delprefix \$key (delete keys by prefix)
+	\$file delpart \$key (delete keys by part)
 	\$file delist \$list (text file lists IP to delete line by line)
-	\$file create \$version (1 or $var) \$type (btree or hash)
+	\$file create \$version ($ver1 or $verx) \$type (btree or hash)
 	\$file clear
 	\$file type (show db type)";
 	exit;
