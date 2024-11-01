@@ -60,13 +60,13 @@ if ($act eq 'type') {
 
 usage() unless $key_in;
 
-my $caret;
-$caret = '^' if $act eq 'prefix' || $act eq 'delprefix';
+my $caret = '^' if $act eq 'prefix' || $act eq 'delprefix';
+my $pattern = $caret . quotemeta $key_in;	# don't match x.x. with x.xx
 if ($act eq 'prefix' || $act eq 'grep') {	# match keys from beginning or part
-	for my $k (keys %h) { say $k if $k =~ /^$caret$key_in/; }
+	for my $k (keys %h) { say $k if $k =~ /$pattern/; }
 } elsif ($act eq 'delprefix' || $act eq 'delpart') { # delete keys by matching from beginning or part
 	for my $k (keys %h) {
-		if ($k =~ /^$caret$key_in/) {
+		if ($k =~ /$pattern/) {
 			delete $h{$k};
 			say "Can't delete $k" if $h{$k};
 		}
