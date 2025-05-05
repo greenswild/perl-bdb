@@ -1,5 +1,5 @@
 #!/usr/local/bin/perl
-use feature 'say';
+# read and edit Berkeley DB both 1.x and higher versions
 use DB_File;
 use BerkeleyDB;
 
@@ -8,12 +8,17 @@ my $act=$ARGV[1];
 my $key_in = $ARGV[2];
 my $val = $ARGV[3];
 
-my (%h, $flagx, $flag1, $db, $type); # initialize strict variables
+my (%h, $bdb, $type);
 my $ver1 = '1';
 my $verx = 'current';
+# connection flag
+my $flag1 = O_RDWR;
+my $flagx = '';
 
+# no argument
 usage() unless $file;
 
+# creating needs a special option and must be done before no-file die
 if ($act eq 'create') {
 	die 'no version to create' unless $key_in;
 	die 'no type to create' unless $val;
@@ -26,49 +31,55 @@ if ($act eq 'create') {
 	exit;
 }
 
+# no-file die before change
 die "$file doesn't exist" unless -f $file;
 
-if ($act eq 'clear') {
-	$flagx = DB_TRUNCATE ;
-	$flag1=O_RDWR|O_TRUNC;
-	# backup first
-	use File::Copy;
-	copy $file, '/tmp/';
-} else {
-	$flag1 = O_RDWR;
-	$flagx = '';
-}
-
-if ($db = tie %h, "BerkeleyDB::Hash", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type='hash'; }
-elsif ($db = tie %h, "BerkeleyDB::Btree", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type = 'btree'; }
-elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_HASH) { $vers = $ver1; $type = "hash"; }
-elsif ($db = tie %h, "DB_File", $file, $flag1, 0644, $DB_BTREE) { $vers = $ver1; $type = "btree"; }
+if ($bdb = tie %h, "BerkeleyDB::Hash", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type='Hash'; }
+elsif ($bdb = tie %h, "BerkeleyDB::Btree", -Filename => $file, -Flags => $flagx) { $vers = $verx; $type = 'Btree'; }
+elsif ($bdb = tie %h, "DB_File", $file, $flag1, 0644, $DB_HASH) { $vers = $ver1; $type = "HASH"; }
+elsif ($bdb = tie %h, "DB_File", $file, $flag1, 0644, $DB_BTREE) { $vers = $ver1; $type = "BTREE"; }
 else { die "unknown type"; }
 
-unless ($act) { # view all
-	while ((my $k, my $v) = each %h) { say "$k $v"; }
+# accept 1 argument
+# view all
+unless ($act) {
+	while ((my $k, my $v) = each %h) { print "$k $v\n"; }
 	exit;
 }
 
-exit if $act eq 'clear';
-
-if ($act eq 'type') {
+# accept 2 arguments
+if ($act eq 'clear') {
+	# don't clear when first connected becuse type is unknown and DB_TRUNCATE allow hash connection to clear then change btree to hash
+	untie %h;
+	# backup before erasing
+	use File::Copy;
+	copy $file, '/tmp/';
+	# reconnect
+	$bdb = tie %h, "BerkeleyDB::$type", -Filename => $file, -Flags => DB_TRUNCATE if $vers eq $verx;
+	$bdb = tie %h, "DB_File", $file, O_RDWR|O_TRUNC, 0644, ${'DB_'.$type} if $vers eq $ver1;
+	untie %h;
+	exit;
+} elsif ($act eq 'type') {
 	$vers = $BerkeleyDB::db_version if $vers eq 'current';
-	say "version $vers $type";
+	print "version $vers $type\n";
+	exit;
+} elsif ($act eq 'keys') {
+	print "$_\n" for keys(%h);
 	exit;
 }
 
+# accept 3 arguments
 usage() unless $key_in;
 
 my $caret = '^' if $act eq 'prefix' || $act eq 'delprefix';
 my $pattern = $caret . quotemeta $key_in;	# don't match x.x. with x.xx
 if ($act eq 'prefix' || $act eq 'grep') {	# match keys from beginning or part
-	for my $k (keys %h) { say $k if $k =~ /$pattern/; }
+	for my $k (keys %h) { print "$k\n" if $k =~ /$pattern/; }
 } elsif ($act eq 'delprefix' || $act eq 'delpart') { # delete keys by matching from beginning or part
 	for my $k (keys %h) {
 		if ($k =~ /$pattern/) {
 			delete $h{$k};
-			say "Can't delete $k" if $h{$k};
+			print "Can't delete $k\n" if $h{$k};
 		}
 	}
 }
@@ -77,12 +88,12 @@ if ($act eq 'prefix' || $act eq 'grep') {	# match keys from beginning or part
 if ($vers eq $verx) { $key_in .= "\0"; $val .= "\0"; }
 
 if ($act eq 'get') {
-	 say $h{$key_in} if $h{$key_in};
+	 print "$h{$key_in}\n" if $h{$key_in};
 } elsif ($act eq 'add') {
 	if ($h{$key_in}) { die "$file key '$key_in' exists"; } else { $h{$key_in}=$val;}
 } elsif ($act eq 'del') {
 	delete $h{$key_in};
-	say "Can't delete $key_in" if $h{$key_in};
+	print "Can't delete $key_in\n" if $h{$key_in};
 } elsif ($act eq 'count') {
 	if ($h{$key_in}) {
 		$h{$key_in}+= $val;
@@ -94,21 +105,23 @@ if ($act eq 'get') {
 	die "file key '$key_in' doesn't exist" unless $h{$key_in};
 	$h{$key_in}=$val;
 } elsif ($act eq 'delist') {
-	use File::Slurp;
-	my @lines = read_file "$key_in";
+	require File::Slurp;
+	File::Slurp->import( read_file );
+	my @lines = read_file("$key_in");
 	for my $rec (@lines) {
 		chomp $rec;
 		$rec .= "\0" if $vers eq $verx;
 		delete $h{$rec};
-		say "Can't delete $rec" if $h{$rec};
+		print "Can't delete $rec\n" if $h{$rec};
 	}
 }
 
 untie %h;
 
 sub usage {
-	say "usage:
+	print "usage:
 	\$file (view all)
+	\$file keys (view all keys)
 	\$file get \$key (read a key)
 	\$file prefix \$key (search keys by prefix)
 	\$file grep \$key (search keys by part)
@@ -121,6 +134,6 @@ sub usage {
 	\$file delist \$list (text file lists IP to delete line by line)
 	\$file create \$version ($ver1 or $verx) \$type (btree or hash)
 	\$file clear
-	\$file type (show db type)";
+	\$file type (show db type)\n";
 	exit;
 }
